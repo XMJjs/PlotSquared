@@ -1,0 +1,49 @@
+name: Build and Release plus
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Build with Gradle
+        run: ./gradlew clean build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: '**/build/libs/*.jar'
+
+      - name: Determine release tag
+        id: get_tag
+        run: |
+          if [ -f UPSTREAM_TAG ]; then
+            TAG=$(cat UPSTREAM_TAG)
+            echo "Using upstream tag: ${TAG}"
+          else
+            TAG="v${{ github.run_number }}"
+            echo "No upstream tag found, using run number: ${TAG}"
+          fi
+          echo "release_tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          name: "Release ${{ steps.get_tag.outputs.release_tag }}"
+          tag_name: "${{ steps.get_tag.outputs.release_tag }}"
+          files: '**/build/libs/*.jar'

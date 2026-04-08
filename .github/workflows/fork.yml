@@ -1,0 +1,71 @@
+name: Sync Fork on Upstream Release
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check-and-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get latest upstream release tag
+        id: get_release
+        run: |
+          UPSTREAM_OWNER="IntellectualSites"
+          UPSTREAM_REPO="PlotSquared"
+          LATEST_TAG=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${UPSTREAM_OWNER}/${UPSTREAM_REPO}/releases/latest | jq -r .tag_name)
+          echo "latest_tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Read last processed release tag
+        id: read_last
+        run: |
+          if [ -f last_release.txt ]; then
+            LAST_TAG=$(cat last_release.txt)
+          else
+            LAST_TAG=""
+          fi
+          echo "last_tag=${LAST_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Compare and sync if new release
+        if: steps.get_release.outputs.latest_tag != steps.read_last.outputs.last_tag && steps.get_release.outputs.latest_tag != ''
+        run: |
+          echo "New release detected: ${{ steps.get_release.outputs.latest_tag }}"
+          
+          # 保存上游 tag 到文件
+          echo "${{ steps.get_release.outputs.latest_tag }}" > UPSTREAM_TAG
+          
+          # 添加上游远程仓库
+          git remote add upstream https://github.com/IntellectualSites/PlotSquared.git
+          git fetch upstream main
+          git checkout main
+          
+          # 合并上游，排除 workflows 目录
+          git merge upstream/main --no-commit --allow-unrelated-histories || true
+          git restore --staged .github/workflows/ 2>/dev/null || true
+          git checkout -- .github/workflows/ 2>/dev/null || true
+          
+          # 检查其他冲突
+          if git diff --cached --name-only --diff-filter=U | grep -v '^\.github/workflows/' | grep -q .; then
+            echo "Merge conflicts detected. Aborting."
+            git merge --abort
+            exit 1
+          fi
+          
+          # 提交（包括 UPSTREAM_TAG 和 last_release.txt）
+          git add UPSTREAM_TAG
+          git add last_release.txt 2>/dev/null || true
+          git commit -m "Sync upstream release ${{ steps.get_release.outputs.latest_tag }}" || echo "No changes to commit"
+          git push origin main
+          
+          # 更新 last_release.txt（避免下次重复同步）
+          echo "${{ steps.get_release.outputs.latest_tag }}" > last_release.txt
+          git add last_release.txt
+          git commit -m "Update last processed release tag" || true
+          git push origin main
